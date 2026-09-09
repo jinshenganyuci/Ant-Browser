@@ -361,6 +361,7 @@ export function BrowserListPage() {
       setProfilePackageBusy(false)
       return
     }
+    setProfilePackageBusy(true)
     setProfileImportPreview(null)
     try {
       const result = await importBrowserProfilePackageWithOptions(zipPath, 'new', confirmConflict, actions)
@@ -394,6 +395,7 @@ export function BrowserListPage() {
         return
       }
       setProfileImportPreview(preview)
+      setProfilePackageBusy(false)
       return
     } catch (error: any) {
       toast.error(error?.message || '导入实例失败')
