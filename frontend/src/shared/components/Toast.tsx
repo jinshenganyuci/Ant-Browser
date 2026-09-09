@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { create } from 'zustand'
 import { Link } from 'react-router-dom'
@@ -20,20 +20,6 @@ interface Toast extends NotificationPayload {
 type ToastOptions = Omit<NotificationInput, 'type' | 'message'>
 
 const TOAST_DEDUPE_WINDOW_MS = 10_000
-const TOAST_SUCCESS_BACKDROP_DURATION = 1_200
-const TOAST_BACKDROP_EXIT_DURATION = 460
-const TOAST_BACKDROP_EXIT_DURATIONS: Record<NotificationType, number> = {
-  success: TOAST_BACKDROP_EXIT_DURATION,
-  info: 360,
-  warning: 360,
-  error: 360,
-}
-const TOAST_FOCUS_PRIORITY: Record<NotificationType, number> = {
-  success: 1,
-  info: 2,
-  warning: 3,
-  error: 4,
-}
 const TOAST_EXIT_DURATIONS: Record<NotificationType, number> = {
   success: 560,
   info: 360,
@@ -41,14 +27,6 @@ const TOAST_EXIT_DURATIONS: Record<NotificationType, number> = {
   error: 360,
 }
 const toastDedupeTimestamps = new Map<string, number>()
-
-interface ToastFocus {
-  id: string
-  type: NotificationType
-  phase: 'enter' | 'leave'
-  duration: number
-  exitDuration: number
-}
 
 interface ToastStore {
   toasts: Toast[]
@@ -103,22 +81,13 @@ function shouldShowToast(dedupeKey?: string) {
   return true
 }
 
-function selectToastFocus(toasts: Toast[]) {
-  return [...toasts].sort((left, right) => TOAST_FOCUS_PRIORITY[right.type] - TOAST_FOCUS_PRIORITY[left.type])[0] ?? null
-}
-
 function getToastDuration(toast: Pick<Toast, 'type' | 'duration'>) {
   if (toast.duration === undefined) return notificationDurations[toast.type]
   if (toast.duration <= 0 || toast.type === 'success') return toast.duration
   return Math.round(toast.duration * 0.8)
 }
 
-function getToastBackdropDuration(toast: Toast) {
-  if (toast.type === 'success') return TOAST_SUCCESS_BACKDROP_DURATION
-  return getToastDuration(toast)
-}
-
-function ToastItem({ toast: t, onManualDismiss }: { toast: Toast; onManualDismiss: (dismissedId: string) => void }) {
+function ToastItem({ toast: t }: { toast: Toast }) {
   const removeToast = useToastStore((state) => state.removeToast)
   const visual = notificationVisuals[t.type]
   const Icon = visual.icon
@@ -127,13 +96,7 @@ function ToastItem({ toast: t, onManualDismiss }: { toast: Toast; onManualDismis
   const exitAnimation = t.type === 'success' ? 'animate-toast-success-out' : 'animate-toast-out'
   const [leaving, setLeaving] = useState(false)
 
-  const startExit = useCallback(
-    (manual = false) => {
-      if (manual) onManualDismiss(t.id)
-      setLeaving(true)
-    },
-    [onManualDismiss, t.id],
-  )
+  const startExit = useCallback(() => setLeaving(true), [])
 
   useEffect(() => {
     if (duration <= 0) return
@@ -174,7 +137,7 @@ function ToastItem({ toast: t, onManualDismiss }: { toast: Toast; onManualDismis
         {t.action?.type === 'navigate' && (
           <Link
             to={t.action.path}
-            onClick={() => startExit(true)}
+            onClick={startExit}
             className="mt-3 inline-flex cursor-pointer items-center rounded-md border border-[var(--color-border-strong)] bg-[var(--color-bg-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-bg-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-1"
           >
             {t.action.label}
@@ -183,7 +146,7 @@ function ToastItem({ toast: t, onManualDismiss }: { toast: Toast; onManualDismis
       </div>
       <button
         type="button"
-        onClick={() => startExit(true)}
+        onClick={startExit}
         aria-label="关闭通知"
         title="关闭通知"
         className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-muted)] hover:text-[var(--color-text-primary)]"
@@ -196,104 +159,12 @@ function ToastItem({ toast: t, onManualDismiss }: { toast: Toast; onManualDismis
 
 export function ToastContainer() {
   const toasts = useToastStore((state) => state.toasts)
-  const [focus, setFocus] = useState<ToastFocus | null>(null)
-  const focusTimer = useRef<number | null>(null)
-  const focusExitTimer = useRef<number | null>(null)
-  const focusRef = useRef<ToastFocus | null>(null)
-  const visibleToastIds = useRef(new Set<string>())
-
-  useEffect(() => {
-    const currentToastIds = new Set(toasts.map((toast) => toast.id))
-    const addedToast = [...toasts].reverse().find((toast) => !visibleToastIds.current.has(toast.id))
-    visibleToastIds.current = currentToastIds
-    if (!addedToast) return
-
-    const focusToast = selectToastFocus(toasts)
-    if (!focusToast) return
-
-    const nextFocus: ToastFocus = {
-      id: focusToast.id,
-      type: focusToast.type,
-      phase: 'enter',
-      duration: getToastBackdropDuration(focusToast),
-      exitDuration: TOAST_BACKDROP_EXIT_DURATIONS[focusToast.type],
-    }
-    setFocus((current) => {
-      if (!current) return nextFocus
-      if (current.id === nextFocus.id && current.type === nextFocus.type) {
-        return current
-      }
-      if (TOAST_FOCUS_PRIORITY[nextFocus.type] < TOAST_FOCUS_PRIORITY[current.type]) return current
-      return nextFocus
-    })
-  }, [toasts])
-
-  useEffect(() => {
-    focusRef.current = focus
-    if (!focus) return
-
-    if (focus.phase === 'leave') {
-      if (focusTimer.current !== null) window.clearTimeout(focusTimer.current)
-      focusTimer.current = null
-      focusExitTimer.current = window.setTimeout(() => {
-        setFocus((current) => (current?.id === focus.id ? null : current))
-        focusExitTimer.current = null
-      }, focus.exitDuration)
-
-      return () => {
-        if (focusExitTimer.current !== null) window.clearTimeout(focusExitTimer.current)
-        focusExitTimer.current = null
-      }
-    }
-
-    if (focusExitTimer.current !== null) window.clearTimeout(focusExitTimer.current)
-    focusExitTimer.current = null
-    if (focusTimer.current !== null) window.clearTimeout(focusTimer.current)
-    if (focus.duration <= 0) return
-
-    focusTimer.current = window.setTimeout(() => {
-      setFocus((current) => (
-        current?.id === focus.id ? { ...current, phase: 'leave' } : current
-      ))
-      focusTimer.current = null
-    }, focus.duration)
-
-    return () => {
-      if (focusTimer.current !== null) window.clearTimeout(focusTimer.current)
-      focusTimer.current = null
-    }
-  }, [focus])
-
-  useEffect(() => () => {
-    if (focusTimer.current !== null) window.clearTimeout(focusTimer.current)
-    if (focusExitTimer.current !== null) window.clearTimeout(focusExitTimer.current)
-  }, [])
-
-  const dismissFocus = useCallback((dismissedId: string) => {
-    if (!focusRef.current || focusRef.current.id !== dismissedId) return
-    if (focusTimer.current !== null) {
-      window.clearTimeout(focusTimer.current)
-      focusTimer.current = null
-    }
-    setFocus((current) => (
-      current?.id === dismissedId ? { ...current, phase: 'leave' } : current
-    ))
-  }, [])
 
   return (
-    <>
-      {focus ? (
-        <div
-          key={`${focus.id}-${focus.type}`}
-          aria-hidden="true"
-          className={`toast-focus-backdrop toast-focus-${focus.type} pointer-events-none fixed inset-0 z-[9995] ${focus.phase === 'leave' ? 'toast-focus-leaving' : ''}`}
-        />
-      ) : null}
-      <div className="pointer-events-none fixed right-3 top-3 z-[10000] flex max-h-[calc(100vh-1.5rem)] w-[min(480px,calc(100vw-1.5rem))] flex-col gap-3 overflow-y-auto overscroll-contain sm:right-4 sm:top-4 sm:w-[min(480px,calc(100vw-2rem))]">
-        {[...toasts].reverse().map((t) => (
-          <ToastItem key={t.id} toast={t} onManualDismiss={dismissFocus} />
-        ))}
-      </div>
-    </>
+    <div className="pointer-events-none fixed right-3 top-3 z-[10000] flex max-h-[calc(100vh-1.5rem)] w-[min(480px,calc(100vw-1.5rem))] flex-col gap-3 overflow-y-auto overscroll-contain sm:right-4 sm:top-4 sm:w-[min(480px,calc(100vw-2rem))]">
+      {[...toasts].reverse().map((t) => (
+        <ToastItem key={t.id} toast={t} />
+      ))}
+    </div>
   )
 }
