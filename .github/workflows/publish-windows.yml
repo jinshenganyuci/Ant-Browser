@@ -1,0 +1,56 @@
+name: 发布 Windows 安装包和便携版
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安装 Wails 和 NSIS
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          choco install nsis -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: 云端构建并打包
+        shell: pwsh
+        run: ./bat/publish.ps1 -Target WINDOWS -WindowsFormat BOTH
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ant-browser-windows-amd64
+          path: |
+            publish/output/*.exe
+            publish/output/*-windows-amd64-portable.zip
+          if-no-files-found: error
+      - name: 上传到版本发布
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $files = Get-ChildItem publish/output -File | Where-Object { $_.Extension -in '.exe', '.zip' }
+          foreach ($file in $files) {
+            gh release upload $env:TAG_NAME $file.FullName --clobber
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
