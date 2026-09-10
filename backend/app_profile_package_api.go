@@ -164,6 +164,9 @@ func (a *App) BrowserProfilePackageExport(profileIds []string) (ProfilePackageEx
 		return ProfilePackageExportResult{}, fmt.Errorf("应用上下文未初始化")
 	}
 
+	if err := a.confirmPortableExportRecovery(ids); err != nil {
+		return ProfilePackageExportResult{}, err
+	}
 	profiles, err := a.profilesForPortableExport(ids)
 	if err != nil {
 		return ProfilePackageExportResult{}, err

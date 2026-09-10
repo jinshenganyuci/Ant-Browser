@@ -8,6 +8,61 @@ import (
 	"testing"
 )
 
+func TestPortableSessionInterruptedRequiresExplicitChoice(t *testing.T) {
+	oldAsk := askPortableSessionRecovery
+	defer func() { askPortableSessionRecovery = oldAsk }()
+	for _, tc := range []struct {
+		name     string
+		answers  []bool
+		expected string
+	}{
+		{"取消保留快照", []bool{false, false}, "pending"},
+		{"明确恢复", []bool{true}, "armed"},
+		{"明确放弃", []bool{false, true}, "removed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, _ := newProfilePackageImportTestApp(t, nil, nil)
+			profile := &BrowserProfile{ProfileId: "interrupted", UserDataDir: "interrupted", ProfileName: "中断测试"}
+			dir := app.browserMgr.ResolveUserDataDir(profile)
+			session := &portableSession{Version: 1, ProfileDirectory: "Default", Cookies: []portableCookie{}, RequireConfirmation: true}
+			if err := writePortableSessionPending(dir, session); err != nil {
+				t.Fatal(err)
+			}
+			if err := restorePortableSession(1, dir, session); err == nil {
+				t.Fatal("关闭状态不明时不能自动重放旧登录态")
+			}
+			index := 0
+			askPortableSessionRecovery = func(_ *App, _ string) (bool, error) {
+				if index >= len(tc.answers) {
+					t.Fatal("出现多余的确认请求")
+				}
+				answer := tc.answers[index]
+				index++
+				return answer, nil
+			}
+			err := app.confirmPortableSessionRecovery(profile, false)
+			got, readErr := readPortableSessionPending(dir)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			switch tc.expected {
+			case "pending":
+				if err == nil || got == nil || !got.RequireConfirmation {
+					t.Fatal("取消后必须保留不自动重放的快照")
+				}
+			case "armed":
+				if err != nil || got == nil || got.RequireConfirmation {
+					t.Fatal("明确授权后才能启用快照")
+				}
+			case "removed":
+				if err != nil || got != nil {
+					t.Fatal("明确放弃后应删除快照")
+				}
+			}
+		})
+	}
+}
+
 func TestPortableCookieParamsPreserveScope(t *testing.T) {
 	expiry := float64(-1)
 	c := portableCookie{Name: "__Host-test", Value: "fixture", Domain: "example.test", Path: "/", Secure: true, HTTPOnly: true, Session: true, Expires: &expiry, SameSite: "Lax", PartitionKey: &portableCookiePartitionKey{TopLevelSite: "https://top.test", HasCrossSiteAncestor: true}}

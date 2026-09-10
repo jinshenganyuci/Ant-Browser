@@ -81,6 +81,9 @@ func (a *App) resolveBrowserStartProfile(input browserStartInput) (*BrowserProfi
 		return nil, false, err
 	}
 	a.ensureProfileLaunchCode(profile)
+	if err := a.confirmPortableSessionRecovery(profile, false); err != nil {
+		return profile, false, err
+	}
 	pending, pendingErr := readPortableSessionPending(a.browserMgr.ResolveUserDataDir(profile))
 	if pendingErr != nil {
 		return profile, false, pendingErr

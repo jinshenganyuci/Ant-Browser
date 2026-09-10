@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ant-chrome/backend/internal/browser"
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 const portableSessionsPath = "portable-sessions.json"
@@ -43,9 +44,10 @@ type portableCookie struct {
 }
 
 type portableSession struct {
-	Version          int              `json:"version"`
-	ProfileDirectory string           `json:"profileDirectory"`
-	Cookies          []portableCookie `json:"cookies"`
+	RequireConfirmation bool             `json:"requireConfirmation,omitempty"`
+	Version             int              `json:"version"`
+	ProfileDirectory    string           `json:"profileDirectory"`
+	Cookies             []portableCookie `json:"cookies"`
 }
 
 type portableSessionPackage struct {
@@ -256,6 +258,9 @@ func restorePortableSession(debugPort int, userDataDir string, session *portable
 	if err := validatePortableSession(session); err != nil {
 		return err
 	}
+	if session.RequireConfirmation {
+		return fmt.Errorf("上次导出关闭状态未确认，必须明确确认后才能恢复当时登录态")
+	}
 	expected := make([]portableCookie, 0, len(session.Cookies))
 	params := make([]map[string]any, 0, len(session.Cookies))
 	now := float64(time.Now().Unix())
@@ -298,6 +303,68 @@ func restorePortableSession(debugPort int, userDataDir string, session *portable
 	// 一次性迁移：成功后不再重放，避免用户退出账号后又被旧 Cookie 登录。
 	if err := os.Remove(filepath.Join(userDataDir, portableSessionPendingFile)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("无法清除已使用的登录态文件：%w", err)
+	}
+	return nil
+}
+
+// Wails 2 的 Windows 原生询问框固定返回 Yes/No，不能依赖自定义按钮文本。
+var askPortableSessionRecovery = func(a *App, message string) (bool, error) {
+	if a.ctx == nil {
+		return false, fmt.Errorf("导出曾中断，需要在应用界面确认是否恢复当时登录态")
+	}
+	answer, err := wailsruntime.MessageDialog(a.ctx, wailsruntime.MessageDialogOptions{
+		Type: wailsruntime.QuestionDialog, Title: "确认中断的登录态迁移", Message: message,
+		Buttons: []string{"Yes", "No"}, DefaultButton: "No", CancelButton: "No",
+	})
+	return strings.EqualFold(answer, "Yes"), err
+}
+
+func (a *App) confirmPortableSessionRecovery(profile *browser.Profile, allowLiveExport bool) error {
+	dir := a.browserMgr.ResolveUserDataDir(profile)
+	pending, err := readPortableSessionPending(dir)
+	if err != nil || pending == nil || !pending.RequireConfirmation {
+		return err
+	}
+	live := isBrowserProfileLive(profile, a.browserMgr.BrowserProcesses[profile.ProfileId])
+	if detection, ok := detectBrowserRuntimeByActivePort(dir); ok && detection.DebugReady {
+		live = true
+	}
+	if live {
+		if allowLiveExport {
+			return nil
+		} // 重新采集当前状态，不使用旧快照。
+		return fmt.Errorf("上次导出尚未确认关闭，请先关闭该实例；当时的快照仍保留且不会自动重放")
+	}
+	restore, err := askPortableSessionRecovery(a, "实例「"+profile.ProfileName+"」上次导出未确认完成，已保留当时的登录态快照。\n如果此后登录或退出过网站，该快照可能已过时。\n\n是否恢复当时的登录态？\n是：确认恢复并继续。\n否：进入放弃或取消选项。")
+	if err != nil {
+		return err
+	}
+	if restore {
+		pending.RequireConfirmation = false
+		return writePortableSessionPending(dir, pending)
+	}
+	discard, err := askPortableSessionRecovery(a, "是否明确放弃这份恢复快照，继续使用现有浏览器数据？\n是：删除快照并继续，可能需要重新登录。\n否：取消本次操作，快照保持不变。")
+	if err != nil {
+		return err
+	}
+	if !discard {
+		return fmt.Errorf("已取消操作，恢复快照仍保留")
+	}
+	return os.Remove(filepath.Join(dir, portableSessionPendingFile))
+}
+
+func (a *App) confirmPortableExportRecovery(ids []string) error {
+	a.browserMgr.InitData()
+	a.browserMgr.Mutex.Lock()
+	defer a.browserMgr.Mutex.Unlock()
+	for _, id := range ids {
+		profile := a.browserMgr.Profiles[id]
+		if profile == nil {
+			return fmt.Errorf("导出实例不存在")
+		}
+		if err := a.confirmPortableSessionRecovery(profile, true); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -403,17 +470,18 @@ func (a *App) collectPortableSessionsForExport(profiles []browser.Profile) (map[
 		dir := a.browserMgr.ResolveUserDataDir(&p)
 		// 必须先落盘再关浏览器。磁盘满、后续实例关闭或 ZIP 保存失败都能重试，
 		// 来源电脑下次启动也能恢复会话 Cookie，而不是因本次导出丢失登录。
-		if err := writePortableSessionPending(dir, sessions[p.ProfileId]); err != nil {
+		recovery := *sessions[p.ProfileId]
+		recovery.RequireConfirmation = true
+		if err := writePortableSessionPending(dir, &recovery); err != nil {
 			return nil, fmt.Errorf("无法安全保存来源实例的恢复快照，未关闭该实例：%w", err)
 		}
 		if err := a.stopPortableExportProfile(p.ProfileId, p.DebugPort); err != nil {
-			// 浏览器拒绝关闭并仍在提供 CDP 时不保留自动重放文件，避免以后覆盖其更新的登录状态。
-			if canConnectDebugPort(p.DebugPort, time.Second) {
-				if removeErr := os.Remove(filepath.Join(dir, portableSessionPendingFile)); removeErr != nil {
-					return nil, fmt.Errorf("关闭实例失败且快照未能清理，请勿继续操作该实例：%w", removeErr)
-				}
-			}
-			return nil, err
+			// 端口仍可连接不代表关闭已取消：保留唯一快照，但禁止未经确认自动重放。
+			return nil, fmt.Errorf("%w；恢复快照已保留，再次启动/导出前会要求确认是否使用当时的登录态", err)
+		}
+		recovery.RequireConfirmation = false
+		if err := writePortableSessionPending(dir, &recovery); err != nil {
+			return nil, fmt.Errorf("来源实例已停止，快照已保留但需要再次确认：%w", err)
 		}
 	}
 	return sessions, nil
