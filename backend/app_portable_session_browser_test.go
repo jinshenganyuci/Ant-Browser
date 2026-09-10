@@ -1,11 +1,14 @@
 package backend
 
 import (
+	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +45,41 @@ func TestPortableSessionRealBrowserRoundTrip(t *testing.T) {
 		t.Fatalf("来源 Cookie 条目数错误: %d", len(session.Cookies))
 	}
 	closeSource()
+	// 模拟来源实例配置了业务启动页，迁移前不得自动访问。
+	prefsPath := filepath.Join(sourceDir, "Default", "Preferences")
+	prefsData, err := os.ReadFile(prefsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefs := map[string]any{}
+	if err := json.Unmarshal(prefsData, &prefs); err != nil {
+		t.Fatal(err)
+	}
+	prefs["session"] = map[string]any{"restore_on_startup": 4, "startup_urls": []string{"https://startup.example.test/"}}
+	prefsData, err = json.Marshal(prefs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prefsPath, prefsData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟原电脑密文无法使用：破坏测试源数据库的密文，独立 CDP 快照保持完整。
+	cookieDBPath := filepath.Join(sourceDir, "Default", "Network", "Cookies")
+	if _, err := os.Stat(cookieDBPath); os.IsNotExist(err) {
+		cookieDBPath = filepath.Join(sourceDir, "Default", "Cookies")
+	}
+	if _, err := os.Stat(cookieDBPath); err != nil {
+		t.Fatal(err)
+	}
+	cookieDB, err := sql.Open("sqlite", cookieDBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, corruptErr := cookieDB.Exec("UPDATE cookies SET value = ?, encrypted_value = ?", "", []byte("invalid-source-machine-ciphertext-fixture"))
+	closeErr := cookieDB.Close()
+	if corruptErr != nil || closeErr != nil {
+		t.Fatalf("模拟源端密文失效失败: %v %v", corruptErr, closeErr)
+	}
 	zipPath := filepath.Join(t.TempDir(), "portable.zip")
 	if _, err := source.writeProfilePackageWithSessions(zipPath, []browser.Profile{profile}, map[string]*portableSession{"source": session}); err != nil {
 		t.Fatal(err)
@@ -58,9 +96,22 @@ func TestPortableSessionRealBrowserRoundTrip(t *testing.T) {
 	if err != nil || pending == nil {
 		t.Fatalf("导入后缺少独立待恢复登录态: %v", err)
 	}
-	// 强制目的端使用新 Local State。Windows 将重新生成本机加密密钥，
-	// 不能依赖复制来的源端 Cookie 密文碰巧仍可解密。
-	if err := os.Remove(filepath.Join(targetDir, "Local State")); err != nil && !os.IsNotExist(err) {
+	// 保留导入的 Local State，但模拟来自其他 Windows 用户、无法被本机解密的 DPAPI 密钥。
+	statePath := filepath.Join(targetDir, "Local State")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{}
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["os_crypt"] = map[string]any{"encrypted_key": base64.StdEncoding.EncodeToString([]byte("DPAPIinvalid-other-machine-fixture"))}
+	stateData, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, stateData, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	targetPort, closeTarget := startPortableTestChrome(t, chrome, targetDir, pending)
@@ -70,8 +121,22 @@ func TestPortableSessionRealBrowserRoundTrip(t *testing.T) {
 	}
 	for _, item := range targets["targetInfos"].([]any) {
 		info := item.(map[string]any)
-		if u, _ := info["url"].(string); u != "" && u != "about:blank" {
-			t.Fatal("登录态恢复前不应打开业务网站")
+		if u, _ := info["url"].(string); u != "" {
+			t.Logf("恢复前浏览器 target: %s", u)
+			if strings.HasPrefix(u, "http:") || strings.HasPrefix(u, "https:") {
+				t.Fatal("登录态恢复前不应打开业务网站")
+			}
+		}
+	}
+	before, err := capturePortableSession(targetPort, "Default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range before.Cookies {
+		for _, original := range session.Cookies {
+			if c.Value == original.Value {
+				t.Fatal("测试未成功模拟跨电脑 Cookie 密文失效")
+			}
 		}
 	}
 	if err := restorePortableSession(targetPort, targetDir, pending); err != nil {

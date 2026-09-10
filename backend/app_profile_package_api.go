@@ -1091,6 +1091,15 @@ func uniqueImportedProfileNameForOverwrite(name string, target browser.Profile, 
 	return base
 }
 
+func isProfilePackageRuntimePath(rel string) bool {
+	root := strings.SplitN(strings.ToLower(filepath.ToSlash(filepath.Clean(rel))), "/", 2)[0]
+	switch root {
+	case "devtoolsactiveport", "singletonlock", "singletoncookie", "singletonsocket", "lockfile", portableSessionPendingFile:
+		return true
+	}
+	return false
+}
+
 func (a *App) extractProfileUserDataToDir(files []*zip.File, oldProfileID string, destDir string) (bool, error) {
 	prefix := "user-data/" + oldProfileID + "/"
 	hasUserData := false
@@ -1100,7 +1109,7 @@ func (a *App) extractProfileUserDataToDir(files []*zip.File, oldProfileID string
 			continue
 		}
 		rel := strings.TrimPrefix(name, prefix)
-		if rel == "" {
+		if rel == "" || isProfilePackageRuntimePath(rel) {
 			continue
 		}
 		if !hasUserData {
@@ -1145,6 +1154,15 @@ func writeProfilePackageDir(zipWriter *zip.Writer, srcDir string, destPrefix str
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
 			return nil
+		}
+		if isProfilePackageRuntimePath(rel) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("实例目录包含符号链接，拒绝跨目录打包：%s", rel)
 		}
 		zipName := filepath.ToSlash(filepath.Join(destPrefix, rel))
 		if entry.IsDir() {
