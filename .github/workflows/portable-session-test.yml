@@ -1,0 +1,17 @@
+name: Cookie 跨电脑迁移回归
+on:
+  workflow_dispatch:
+  push:
+    branches: ["fix/portable-session"]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: 实例包跨电脑登录态回归
+        run: go test ./backend -run '^TestPortable' -count=1 -v
