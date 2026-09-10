@@ -19,6 +19,7 @@ func TestPortableSessionRealBrowserRoundTrip(t *testing.T) {
 		t.Skip("真实浏览器用例仅由配置 ANT_TEST_CHROME 的云端 Runner 执行")
 	}
 	source, _ := newProfilePackageImportTestApp(t, nil, nil)
+	source.db = newProfilePackageDatabase(t, source.appRoot)
 	profile := browser.Profile{ProfileId: "source", ProfileName: "登录态云端回归", UserDataDir: "source"}
 	sourceDir := source.browserMgr.ResolveUserDataDir(&profile)
 	sourcePort, closeSource := startPortableTestChrome(t, chrome, sourceDir, nil)
@@ -46,6 +47,7 @@ func TestPortableSessionRealBrowserRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, _ := newProfilePackageImportTestApp(t, nil, nil)
+	target.db = newProfilePackageDatabase(t, target.appRoot)
 	result, err := target.importProfilePackageFromPath(zipPath)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +137,17 @@ func startPortableTestChrome(t *testing.T, chrome, dir string, pending *portable
 		args = portableSessionLaunchArgs(dir, port, "direct://", nil, pending)
 	}
 	args = append(args, "--headless=new", "--disable-background-networking", "--disable-component-update", "--host-resolver-rules=MAP * ~NOTFOUND")
+	args = append(args, "--enable-logging=stderr")
+	logPath := filepath.Join(t.TempDir(), "chrome-startup.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = logFile.Close() })
 	cmd := exec.Command(chrome, args...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	t.Logf("Chrome=%s; temporary profile=%s; CDP=%d", chrome, dir, port)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +187,11 @@ func startPortableTestChrome(t *testing.T, chrome, dir string, pending *portable
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	t.Fatal("测试 Chrome CDP 接口超时")
+	closeBrowser()
+	data, _ := os.ReadFile(logPath)
+	if len(data) > 8000 {
+		data = data[len(data)-8000:]
+	}
+	t.Fatalf("测试 Chrome CDP 接口超时，启动日志：%s", data)
 	return 0, closeBrowser
 }

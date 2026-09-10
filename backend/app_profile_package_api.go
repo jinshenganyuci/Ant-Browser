@@ -310,7 +310,7 @@ func (a *App) writeProfilePackageWithSessions(zipPath string, profiles []browser
 	}
 	tmpPath := zipPath + ".tmp"
 	_ = os.Remove(tmpPath)
-	out, err := os.Create(tmpPath)
+	out, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("创建导出文件失败: %w", err)
 	}
@@ -348,7 +348,17 @@ func (a *App) writeProfilePackageWithSessions(zipPath string, profiles []browser
 					return err
 				}
 			}
-			if err := writeProfilePackageJSON(zipWriter, portableSessionsPath, portableSessionPackage{Version: 1, Profiles: sessions}); err != nil {
+			data, err := json.Marshal(portableSessionPackage{Version: 1, Profiles: sessions})
+			if err != nil || len(data) > portableSessionMaxBytes {
+				return fmt.Errorf("登录态包过大，请减少本次导出的实例数量")
+			}
+			header := &zip.FileHeader{Name: portableSessionsPath, Method: zip.Deflate}
+			header.SetMode(0o600)
+			w, err := zipWriter.CreateHeader(header)
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write(data); err != nil {
 				return err
 			}
 			fileCount++

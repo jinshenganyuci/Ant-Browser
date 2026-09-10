@@ -408,6 +408,16 @@ func (a *App) stopPortableExportProfile(profileID string, debugPort int) error {
 // 迁移首次启动不恢复旧标签页、不安装扩展，也不接受会提前导航的自定义参数。
 // 指纹参数、目标代理保持不变；下次正常启动恢复原有启动行为。
 func portableSessionLaunchArgs(userDataDir string, port int, proxy string, fingerprintArgs []string, session *portableSession) []string {
-	args := buildBrowserLaunchArgs(userDataDir, port, proxy, fingerprintArgs, nil, nil, nil, false)
+	safeFingerprintArgs := []string{}
+	for _, arg := range fingerprintArgs {
+		// 指纹配置同样来自导入数据，不能借此夹带 URL、扩展或自动会话恢复开关。
+		for _, prefix := range []string{"--fingerprint-", "--lang=", "--accept-lang=", "--timezone=", "--user-agent=", "--force-webrtc-ip-handling-policy=", "--webrtc-ip-handling-policy=", "--force-color-profile="} {
+			if strings.HasPrefix(arg, prefix) {
+				safeFingerprintArgs = append(safeFingerprintArgs, arg)
+				break
+			}
+		}
+	}
+	args := buildBrowserLaunchArgs(userDataDir, port, proxy, safeFingerprintArgs, nil, nil, nil, false)
 	return append(args, "--no-startup-window", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-background-networking", "--profile-directory="+session.ProfileDirectory)
 }
