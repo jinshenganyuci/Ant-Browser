@@ -186,10 +186,24 @@ func writePortableSessionPending(userDataDir string, session *portableSession) e
 	} else if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	file, err := os.CreateTemp(userDataDir, ".ant-session-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o600)
+	tmp := file.Name()
+	defer os.Remove(tmp)
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func readPortableSessionPackage(files []*zip.File, profiles []browser.Profile) (map[string]*portableSession, error) {
@@ -289,12 +303,17 @@ func restorePortableSession(debugPort int, userDataDir string, session *portable
 }
 
 func profilePortableDirectory(profile *browser.Profile, userDataDir string) string {
-	for i, arg := range profile.LaunchArgs {
+	launchArgs := profile.LaunchArgs
+	if profile.Running && len(profile.LastLaunchArgs) > 0 {
+		launchArgs = profile.LastLaunchArgs
+	}
+	for i := len(launchArgs) - 1; i >= 0; i-- {
+		arg := launchArgs[i]
 		if strings.HasPrefix(arg, "--profile-directory=") {
 			return strings.TrimPrefix(arg, "--profile-directory=")
 		}
-		if arg == "--profile-directory" && i+1 < len(profile.LaunchArgs) {
-			return profile.LaunchArgs[i+1]
+		if arg == "--profile-directory" && i+1 < len(launchArgs) {
+			return launchArgs[i+1]
 		}
 	}
 	var state struct {
@@ -373,11 +392,27 @@ func (a *App) collectPortableSessionsForExport(profiles []browser.Profile) (map[
 		}
 		sessions[p.ProfileId] = pending
 	}
+	encoded, err := json.Marshal(portableSessionPackage{Version: 1, Profiles: sessions})
+	if err != nil || len(encoded) > portableSessionMaxBytes {
+		return nil, fmt.Errorf("登录态包过大，请减少本次导出的实例数量")
+	}
 	for _, p := range profiles {
 		if !p.Running {
 			continue
 		}
+		dir := a.browserMgr.ResolveUserDataDir(&p)
+		// 必须先落盘再关浏览器。磁盘满、后续实例关闭或 ZIP 保存失败都能重试，
+		// 来源电脑下次启动也能恢复会话 Cookie，而不是因本次导出丢失登录。
+		if err := writePortableSessionPending(dir, sessions[p.ProfileId]); err != nil {
+			return nil, fmt.Errorf("无法安全保存来源实例的恢复快照，未关闭该实例：%w", err)
+		}
 		if err := a.stopPortableExportProfile(p.ProfileId, p.DebugPort); err != nil {
+			// 浏览器拒绝关闭并仍在提供 CDP 时不保留自动重放文件，避免以后覆盖其更新的登录状态。
+			if canConnectDebugPort(p.DebugPort, time.Second) {
+				if removeErr := os.Remove(filepath.Join(dir, portableSessionPendingFile)); removeErr != nil {
+					return nil, fmt.Errorf("关闭实例失败且快照未能清理，请勿继续操作该实例：%w", removeErr)
+				}
+			}
 			return nil, err
 		}
 	}
@@ -411,7 +446,7 @@ func portableSessionLaunchArgs(userDataDir string, port int, proxy string, finge
 	safeFingerprintArgs := []string{}
 	for _, arg := range fingerprintArgs {
 		// 指纹配置同样来自导入数据，不能借此夹带 URL、扩展或自动会话恢复开关。
-		for _, prefix := range []string{"--fingerprint-", "--lang=", "--accept-lang=", "--timezone=", "--user-agent=", "--force-webrtc-ip-handling-policy=", "--webrtc-ip-handling-policy=", "--force-color-profile="} {
+		for _, prefix := range []string{"--fingerprint=", "--fingerprint-", "--fingerprinting-", "--lang=", "--accept-lang=", "--timezone=", "--user-agent=", "--window-size=", "--disable-spoofing=", "--disable-non-proxied-udp", "--disable-gpu-fingerprint", "--force-webrtc-ip-handling-policy=", "--webrtc-ip-handling-policy=", "--force-color-profile="} {
 			if strings.HasPrefix(arg, prefix) {
 				safeFingerprintArgs = append(safeFingerprintArgs, arg)
 				break

@@ -308,12 +308,11 @@ func (a *App) writeProfilePackageWithSessions(zipPath string, profiles []browser
 	if err := os.MkdirAll(filepath.Dir(zipPath), 0o755); err != nil {
 		return 0, fmt.Errorf("创建导出目录失败: %w", err)
 	}
-	tmpPath := zipPath + ".tmp"
-	_ = os.Remove(tmpPath)
-	out, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	out, err := os.CreateTemp(filepath.Dir(zipPath), ".ant-profile-export-*.tmp")
 	if err != nil {
 		return 0, fmt.Errorf("创建导出文件失败: %w", err)
 	}
+	tmpPath := out.Name()
 	zipWriter := zip.NewWriter(out)
 	fileCount := 0
 	var manifest ProfilePackageManifest
@@ -1093,6 +1092,9 @@ func uniqueImportedProfileNameForOverwrite(name string, target browser.Profile, 
 
 func isProfilePackageRuntimePath(rel string) bool {
 	root := strings.SplitN(strings.ToLower(filepath.ToSlash(filepath.Clean(rel))), "/", 2)[0]
+	if strings.HasPrefix(root, ".ant-session-") && strings.HasSuffix(root, ".tmp") {
+		return true
+	}
 	switch root {
 	case "devtoolsactiveport", "singletonlock", "singletoncookie", "singletonsocket", "lockfile", portableSessionPendingFile:
 		return true

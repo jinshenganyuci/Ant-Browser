@@ -58,14 +58,14 @@ func TestPortableSessionFailureKeepsPending(t *testing.T) {
 
 func TestPortableSessionLaunchRejectsEarlyNavigation(t *testing.T) {
 	session := &portableSession{Version: 1, ProfileDirectory: "Default", Cookies: []portableCookie{}}
-	args := portableSessionLaunchArgs(t.TempDir(), 12345, "direct://", []string{"--fingerprint-seed=123", "--lang=zh-CN", "--restore-last-session", "--app=https://example.test", "--load-extension=/tmp/no-extension", "https://example.test"}, session)
+	args := portableSessionLaunchArgs(t.TempDir(), 12345, "direct://", []string{"--fingerprint=123", "--fingerprinting-client-rects-noise", "--disable-non-proxied-udp", "--disable-spoofing=font,gpu", "--window-size=1200,800", "--lang=zh-CN", "--restore-last-session", "--app=https://example.test", "--load-extension=/tmp/no-extension", "https://example.test"}, session)
 	joined := strings.Join(args, " ")
 	for _, forbidden := range []string{"--restore-last-session", "--app=", "--load-extension=", "https://example.test"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatal("恢复前存在提前导航入口")
 		}
 	}
-	for _, required := range []string{"--no-startup-window", "--disable-extensions", "--fingerprint-seed=123", "--lang=zh-CN"} {
+	for _, required := range []string{"--no-startup-window", "--disable-extensions", "--fingerprint=123", "--fingerprinting-client-rects-noise", "--disable-non-proxied-udp", "--disable-spoofing=font,gpu", "--window-size=1200,800", "--lang=zh-CN"} {
 		if !strings.Contains(joined, required) {
 			t.Fatal("恢复专用启动缺少必要开关")
 		}

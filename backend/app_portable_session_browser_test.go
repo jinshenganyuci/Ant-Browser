@@ -37,9 +37,17 @@ func TestPortableSessionRealBrowserRoundTrip(t *testing.T) {
 	if _, err := cdpBrowserCallResult(sourcePort, "Storage.setCookies", map[string]any{"cookies": fixtures}); err != nil {
 		t.Fatal("来源浏览器无法写入虚构 Cookie", err)
 	}
-	session, err := capturePortableSession(sourcePort, "Default")
+	profile.Running = true
+	profile.DebugReady = true
+	profile.DebugPort = sourcePort
+	source.browserMgr.Profiles[profile.ProfileId] = &profile
+	sessions, err := source.collectPortableSessionsForExport([]browser.Profile{profile})
 	if err != nil {
 		t.Fatal(err)
+	}
+	session := sessions[profile.ProfileId]
+	if saved, err := readPortableSessionPending(sourceDir); err != nil || saved == nil {
+		t.Fatalf("关闭来源实例前必须安全持久化可重试快照: %v", err)
 	}
 	if len(session.Cookies) != len(fixtures) {
 		t.Fatalf("来源 Cookie 条目数错误: %d", len(session.Cookies))
