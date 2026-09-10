@@ -127,6 +127,7 @@ type profilePackageContents struct {
 	Reader           *zip.ReadCloser
 	Profiles         []browser.Profile
 	DatabaseSnapshot *ProfilePackageDatabase
+	PortableSessions map[string]*portableSession
 }
 
 type profilePackageConflictMatch struct {
@@ -150,6 +151,8 @@ type profilePackageDirectorySwap struct {
 
 // BrowserProfilePackageExport 导出选中的实例配置和浏览器用户数据目录。
 func (a *App) BrowserProfilePackageExport(profileIds []string) (ProfilePackageExportResult, error) {
+	a.profileExportMu.Lock()
+	defer a.profileExportMu.Unlock()
 	a.maintenanceMu.Lock()
 	defer a.maintenanceMu.Unlock()
 
@@ -161,7 +164,7 @@ func (a *App) BrowserProfilePackageExport(profileIds []string) (ProfilePackageEx
 		return ProfilePackageExportResult{}, fmt.Errorf("应用上下文未初始化")
 	}
 
-	profiles, err := a.collectProfilesForPackage(ids)
+	profiles, err := a.profilesForPortableExport(ids)
 	if err != nil {
 		return ProfilePackageExportResult{}, err
 	}
@@ -175,7 +178,15 @@ func (a *App) BrowserProfilePackageExport(profileIds []string) (ProfilePackageEx
 		return ProfilePackageExportResult{Cancelled: true, Message: "已取消导出"}, nil
 	}
 
-	fileCount, err := a.writeProfilePackage(savePath, profiles)
+	sessions, err := a.collectPortableSessionsForExport(profiles)
+	if err != nil {
+		return ProfilePackageExportResult{}, err
+	}
+	profiles, err = a.collectProfilesForPackage(ids)
+	if err != nil {
+		return ProfilePackageExportResult{}, err
+	}
+	fileCount, err := a.writeProfilePackageWithSessions(savePath, profiles, sessions)
 	if err != nil {
 		return ProfilePackageExportResult{}, err
 	}
@@ -184,7 +195,7 @@ func (a *App) BrowserProfilePackageExport(profileIds []string) (ProfilePackageEx
 		ZipPath:      savePath,
 		ProfileCount: len(profiles),
 		FileCount:    fileCount,
-		Message:      "导出完成",
+		Message:      "导出完成，已包含可迁移 Cookie 登录态；请妥善保管 ZIP，不要公开分享",
 	}, nil
 }
 
@@ -286,6 +297,10 @@ func (a *App) collectProfilesForPackage(profileIds []string) ([]browser.Profile,
 }
 
 func (a *App) writeProfilePackage(zipPath string, profiles []browser.Profile) (int, error) {
+	return a.writeProfilePackageWithSessions(zipPath, profiles, nil)
+}
+
+func (a *App) writeProfilePackageWithSessions(zipPath string, profiles []browser.Profile, sessions map[string]*portableSession) (int, error) {
 	databaseSnapshot, err := a.collectProfilePackageDatabase(profiles)
 	if err != nil {
 		return 0, err
@@ -324,6 +339,20 @@ func (a *App) writeProfilePackage(zipPath string, profiles []browser.Profile) (i
 			return err
 		}
 		fileCount++
+		if sessions != nil {
+			if len(sessions) != len(profiles) {
+				return fmt.Errorf("登录态与导出实例数量不匹配")
+			}
+			for _, p := range profiles {
+				if err := validatePortableSession(sessions[p.ProfileId]); err != nil {
+					return err
+				}
+			}
+			if err := writeProfilePackageJSON(zipWriter, portableSessionsPath, portableSessionPackage{Version: 1, Profiles: sessions}); err != nil {
+				return err
+			}
+			fileCount++
+		}
 		for i := range profiles {
 			profile := &profiles[i]
 			userDataDir := a.browserMgr.ResolveUserDataDir(profile)
@@ -406,6 +435,10 @@ func openProfilePackageContents(zipPath string) (*profilePackageContents, error)
 		return nil, fmt.Errorf("实例包为空")
 	}
 	contents.Profiles = profiles
+	contents.PortableSessions, err = readPortableSessionPackage(reader.File, profiles)
+	if err != nil {
+		return nil, err
+	}
 	completed = true
 	return contents, nil
 }
@@ -778,6 +811,18 @@ func (a *App) importProfilePackageFromPathWithModeAndActions(zipPath string, mod
 		hasUserData, err := a.extractProfileUserDataToDir(contents.Reader.File, oldID, stagingDir)
 		if err != nil {
 			return ProfilePackageImportResult{}, err
+		}
+		// 原始目录中的文件不作为登录态授权来源，避免旧包暗中重放 Cookie。
+		if err := os.Remove(filepath.Join(stagingDir, portableSessionPendingFile)); err != nil && !os.IsNotExist(err) {
+			return ProfilePackageImportResult{}, err
+		}
+		if session := contents.PortableSessions[oldID]; session != nil {
+			if err := writePortableSessionPending(stagingDir, session); err != nil {
+				return ProfilePackageImportResult{}, err
+			}
+			hasUserData = true
+		} else if hasProfileCookieStore(stagingDir) {
+			warnings = append(warnings, fmt.Sprintf("实例「%s」来自旧版/原始备份包，不含可迁移 Cookie；跨电脑登录态无法保证，请在来源电脑使用新版运行实例后重新导出", profile.ProfileName))
 		}
 		if !hasUserData {
 			warnings = append(warnings, fmt.Sprintf("实例「%s」没有用户数据目录，仅导入配置", profile.ProfileName))

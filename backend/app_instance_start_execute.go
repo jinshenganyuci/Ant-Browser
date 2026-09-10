@@ -65,6 +65,13 @@ func (a *App) startBrowserProfileWithPlan(input browserStartInput, plan *browser
 	for attempt := 1; attempt <= plan.maxStartAttempts; attempt++ {
 		stableDebugPort, readyErr := waitBrowserDebugPortStable(plan.assignedDebugPort, plan.userDataDir, plan.startReadyTimeout, plan.startStableWindow, monitor)
 		if readyErr == nil {
+			if plan.portableSession != nil {
+				if err := restorePortableSession(stableDebugPort, plan.userDataDir, plan.portableSession); err != nil {
+					_ = a.stopProcessCmd(cmd)
+					profile.LastError = err.Error()
+					return profile, err
+				}
+			}
 			a.markProfileRunningLocked(input.ProfileID, profile, cmd, cmd.Process.Pid, stableDebugPort, true, "")
 			if plan.extensionWarning != "" {
 				profile.RuntimeWarning = plan.extensionWarning
@@ -145,6 +152,11 @@ func (a *App) startBrowserProfileWithPlan(input browserStartInput, plan *browser
 		break
 	}
 
+	if plan.portableSession != nil {
+		_ = a.stopProcessCmd(cmd)
+		profile.LastError = "迁移登录态恢复前调试接口未就绪，已停止启动并保留 Cookie 供重试"
+		return profile, fmt.Errorf("%s", profile.LastError)
+	}
 	pendingAttach := shouldKeepBrowserRunningPendingDebugReady(plan.assignedDebugPort, monitor)
 	if pendingAttach {
 		runtimeWarning := browserDebugPendingWarning(plan.totalReadyTimeout)

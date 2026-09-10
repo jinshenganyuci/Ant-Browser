@@ -20,6 +20,8 @@ func (a *App) BrowserInstanceStartWithParams(profileId string, extraLaunchArgs [
 }
 
 func (a *App) browserInstanceStartInternal(profileId string, extraLaunchArgs []string, startURLs []string, skipDefaultStartURLs bool, preferVisibleWindow bool, forceDirectProxy bool, proxyId string, proxyConfig string) (*BrowserProfile, error) {
+	a.profileExportMu.Lock()
+	defer a.profileExportMu.Unlock()
 	input := newBrowserStartInput(profileId, extraLaunchArgs, startURLs, skipDefaultStartURLs, preferVisibleWindow, forceDirectProxy, proxyId, proxyConfig)
 	a.browserMgr.Mutex.Lock()
 	defer a.browserMgr.Mutex.Unlock()

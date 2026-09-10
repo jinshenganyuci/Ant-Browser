@@ -7,11 +7,43 @@ permissions:
   contents: read
 jobs:
   regression:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: 实例包跨电脑登录态回归
-        run: go test ./backend -run '^TestPortable' -count=1 -v
+      - name: 设置真实 Chrome 路径（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $paths = @("${env:ProgramFiles}\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe")
+          $chrome = $paths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $chrome) { throw "Runner 上未找到 Chrome，不能跳过登录态集成验证" }
+          "ANT_TEST_CHROME=$chrome" >> $env:GITHUB_ENV
+      - name: 设置真实 Chrome 路径（Linux）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chrome=$(command -v google-chrome)
+          printf 'ANT_TEST_CHROME=%s\n' "$chrome" >> "$GITHUB_ENV"
+      - name: 实例包、启动参数及真实浏览器登录态回归
+        run: go test ./backend -run '^Test(Portable|ProfilePackage|BuildBrowserLaunch)' -count=1 -v -timeout=10m
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npx tsc --noEmit
+        working-directory: frontend

@@ -303,18 +303,13 @@ export function BrowserListPage() {
   const handleBatchExport = async () => {
     const ids = Array.from(selectedIds)
     if (ids.length === 0 || profilePackageBusy) return
-    const runningNames = profiles
-      .filter(profile => ids.includes(profile.profileId) && profile.running)
-      .map(profile => profile.profileName)
-    if (runningNames.length > 0) {
-      toast.error(`请先停止实例再导出：${runningNames.slice(0, 3).join('、')}${runningNames.length > 3 ? ' 等' : ''}`)
-      return
-    }
+    if (!window.confirm(`导出选中的 ${ids.length} 个实例及登录态？\n\n跨电脑迁移需在来源电脑保持实例运行，程序会采集 Cookie 并正常停止实例后打包。\nZIP 包含可直接登录网站的 Cookie，请勿公开分享。`)) return
     setProfilePackageBusy(true)
     try {
       const result = await exportBrowserProfilePackage(ids)
       if (result.cancelled) return
-      toast.success(`已导出 ${result.profileCount} 个实例`)
+      toast.success(result.message || `已导出 ${result.profileCount} 个实例及登录态`)
+      await loadProfiles()
     } catch (error: any) {
       toast.error(error?.message || '导出实例失败')
     } finally {
@@ -324,15 +319,13 @@ export function BrowserListPage() {
 
   const handleExportProfile = async (profile: BrowserProfile) => {
     if (profilePackageBusy) return
-    if (profile.running) {
-      toast.error(`请先停止实例再导出：${profile.profileName}`)
-      return
-    }
+    if (!window.confirm(`导出「${profile.profileName}」及登录态？\n\n跨电脑保留登录需在来源电脑保持实例运行，导出会读取 Cookie 并正常停止实例。\nZIP 内包含可直接登录网站的 Cookie，请勿公开分享。旧版 ZIP 无法自动补回登录态。`)) return
     setProfilePackageBusy(true)
     try {
       const result = await exportBrowserProfilePackage([profile.profileId])
       if (result.cancelled) return
-      toast.success(`已导出：${profile.profileName}`)
+      toast.success(result.message || `已导出实例及登录态：${profile.profileName}`)
+      await loadProfiles()
     } catch (error: any) {
       toast.error(error?.message || '导出实例失败')
     } finally {

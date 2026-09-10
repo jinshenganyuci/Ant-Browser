@@ -119,21 +119,28 @@ func cdpBrowserCallResult(debugPort int, method string, params map[string]any) (
 		return nil, fmt.Errorf("浏览器级 WebSocket 连接失败: %w", err)
 	}
 	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(cdpWebSocketReadTimeout))
+	conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+	conn.SetReadLimit(portableSessionMaxBytes)
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 
 	msg := cdpMessage{Id: 1, Method: method, Params: params}
 	if err := conn.WriteJSON(msg); err != nil {
 		return nil, fmt.Errorf("浏览器级 CDP 命令发送失败: %w", err)
 	}
 
-	var cdpResp cdpResponse
-	if err := conn.ReadJSON(&cdpResp); err != nil {
-		return nil, fmt.Errorf("浏览器级 CDP 响应读取失败: %w", err)
+	for {
+		var cdpResp cdpResponse
+		if err := conn.ReadJSON(&cdpResp); err != nil {
+			return nil, fmt.Errorf("浏览器级 CDP 响应读取失败: %w", err)
+		}
+		if cdpResp.Id != msg.Id {
+			continue
+		}
+		if cdpResp.Error != nil {
+			return nil, fmt.Errorf("浏览器级 CDP 错误: %s", cdpResp.Error.Message)
+		}
+		return cdpResp.Result, nil
 	}
-	if cdpResp.Error != nil {
-		return nil, fmt.Errorf("浏览器级 CDP 错误: %s", cdpResp.Error.Message)
-	}
-	return cdpResp.Result, nil
 }
 
 func createBrowserStartTarget(debugPort int, url string) error {

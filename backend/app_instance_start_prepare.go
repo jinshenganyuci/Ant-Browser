@@ -38,6 +38,7 @@ type browserStartPlan struct {
 	startStableWindow    time.Duration
 	maxStartAttempts     int
 	totalReadyTimeout    time.Duration
+	portableSession      *portableSession
 }
 
 var clearBrowserSessionRestoreData = browser.ClearSessionRestoreData
@@ -80,6 +81,13 @@ func (a *App) resolveBrowserStartProfile(input browserStartInput) (*BrowserProfi
 		return nil, false, err
 	}
 	a.ensureProfileLaunchCode(profile)
+	pending, pendingErr := readPortableSessionPending(a.browserMgr.ResolveUserDataDir(profile))
+	if pendingErr != nil {
+		return profile, false, pendingErr
+	}
+	if pending != nil && profile.Running {
+		return profile, false, fmt.Errorf("实例存在待恢复登录态，请先关闭正在运行的实例再启动")
+	}
 
 	if !profile.Running {
 		return profile, false, nil
@@ -131,6 +139,10 @@ func (a *App) prepareBrowserStartPlan(input browserStartInput, profile *BrowserP
 		return nil, err
 	}
 
+	pendingSession, err := readPortableSessionPending(userDataDir)
+	if err != nil {
+		return nil, err
+	}
 	effectiveProxy, acquiredProxyBridge, releaseProxyBridge, err := a.resolveBrowserStartProxy(input, profile)
 	if err != nil {
 		return nil, err
@@ -171,8 +183,19 @@ func (a *App) prepareBrowserStartPlan(input browserStartInput, profile *BrowserP
 	// 若此时实例浏览器尚未运行，安装助手进程就是实例浏览器本身，
 	// 缺少调试端口会导致后续正式启动被 Chrome 单实例交接、误报“就绪前退出”。
 	extensionInstallArgs := buildBrowserLaunchArgs(userDataDir, assignedDebugPort, effectiveProxy, fingerprintLaunchArgs, sanitizedProfileLaunchArgs, sanitizedExtraLaunchArgs, nil, restoreLastSession)
-	_, extensionWarnings := a.browserMgr.PrepareProfileExtensions(profile, chromeBinaryPath, userDataDir, extensionInstallArgs)
-	extensionWarning := joinBrowserStartExtensionWarnings(extensionWarnings)
+	extensionWarning := ""
+	if pendingSession != nil {
+		instanceArgs = portableSessionLaunchArgs(userDataDir, assignedDebugPort, effectiveProxy, fingerprintLaunchArgs, pendingSession)
+		deferredStartTargets = resolveConfiguredStartTargets(startURLs, defaultStartURLs, input.SkipDefaultStartURLs)
+		if len(deferredStartTargets) == 0 {
+			deferredStartTargets = []string{"about:blank"}
+		}
+		deferredStartNewTabs = true
+		extensionWarning = "已恢复迁移 Cookie；为避免提前打开网站，本次不恢复旧标签页且暂停扩展，下次启动恢复正常设置"
+	} else {
+		_, extensionWarnings := a.browserMgr.PrepareProfileExtensions(profile, chromeBinaryPath, userDataDir, extensionInstallArgs)
+		extensionWarning = joinBrowserStartExtensionWarnings(extensionWarnings)
+	}
 
 	return &browserStartPlan{
 		profile:              profile,
@@ -190,6 +213,7 @@ func (a *App) prepareBrowserStartPlan(input browserStartInput, profile *BrowserP
 		startStableWindow:    startStableWindow,
 		maxStartAttempts:     maxStartAttempts,
 		totalReadyTimeout:    totalReadyTimeout,
+		portableSession:      pendingSession,
 	}, nil
 }
 
@@ -273,6 +297,9 @@ func (a *App) prepareBrowserLaunchContext(input browserStartInput, profile *Brow
 	}
 
 	if detection, ok := detectBrowserRuntimeByActivePort(userDataDir); ok && detection.DebugReady {
+		if pending, err := readPortableSessionPending(userDataDir); err != nil || pending != nil {
+			return nil, nil, nil, "", "", fmt.Errorf("检测到待恢复登录态及已运行的浏览器，请先关闭该实例再启动")
+		}
 		a.markProfileLastLaunchArgsLocked(profile, nil)
 		a.markProfileRunningLocked(input.ProfileID, profile, nil, detection.PID, detection.DebugPort, true, "")
 		log.Warn("检测到同一用户数据目录已有浏览器运行，已接管为当前实例状态",
