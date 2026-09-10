@@ -13,8 +13,8 @@ import (
 // 使用虚构 Cookie；不读取真实浏览器资料或访问第三方账号。
 // 原实现只复制 user-data，会忽略独立登录态，因此本用例在修复前应失败。
 func TestPortableSessionImportStagesCookiesBeforeFirstLaunch(t *testing.T) {
-    app, root := newProfilePackageImportTestApp(t, nil, nil)
-    zipPath := filepath.Join(root, "portable.zip")
+    app, _ := newProfilePackageImportTestApp(t, nil, nil)
+    zipPath := filepath.Join(t.TempDir(), "portable.zip")
     out, err := os.Create(zipPath)
     if err != nil { t.Fatal(err) }
     zw := zip.NewWriter(out)
